@@ -1,0 +1,23 @@
+rules_version = '2';
+
+// IMPORTANT: Firestore "test mode" rules (set when you created the database)
+// automatically expire 30 days after creation — after that, ALL reads and
+// writes will be denied until you publish real rules. Replace the test-mode
+// rules with these (or similar) before that deadline.
+//
+// These rules allow anyone to read and write the app's single collection,
+// matching the prototype's current security model (no real per-record access
+// control — see the project README and prompt doc for that trade-off
+// discussion). This is NOT meant to be "secure" in a strict sense; it simply
+// keeps the app functioning the same way it does today, indefinitely, instead
+// of silently breaking when test mode expires.
+//
+// HOW TO APPLY: Firebase console > Firestore Database > Rules tab > paste
+// this in > Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /tidraiwa_data/{document} {
+      allow read, write: if true;
+    }
+  }
+}
