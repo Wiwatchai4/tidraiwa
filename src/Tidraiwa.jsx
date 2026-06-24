@@ -808,73 +808,83 @@ export default function Tidraiwa() {
         ))}
       </div>
 
-      {/* signboard — shows only the selected level, with status rows
-          color-filled (not just colored text) so red/green reads instantly */}
+      {/* signboard — shows only the selected level. Two fixed slots, red on
+          top and green on bottom, ALWAYS in that order and ALWAYS both
+          present — so the layout never shifts whether or not there's a
+          report. An empty slot shows a muted placeholder instead of
+          disappearing, so people don't have to re-scan the screen each time. */}
       <div style={{ padding: "0 16px" }}>
         {(() => {
           const level = selectedLevel;
           const red = reports[level].red;
           const green = reports[level].green;
-          const hasAny = red || green;
           return (
-            <div style={{ borderRadius: 14, padding: 4, marginBottom: 14, background: "#111", border: `2px solid ${hasAny ? colors.red : colors.green}` }}>
+            <div style={{ borderRadius: 14, padding: 4, marginBottom: 14, background: "#111", border: "2px solid #333" }}>
               <p style={{ margin: "10px 12px 10px", fontSize: 15, fontWeight: 800, color: colors.gray }}>{levelLabel[level]}</p>
 
-              {!hasAny && (
-                <div style={{ background: colors.greenDark, borderRadius: 10, padding: "16px 14px", margin: "0 4px 4px" }}>
-                  <p style={{ margin: 0, fontSize: 19, fontWeight: 900, color: colors.white, lineHeight: 1.4 }}>
-                    🟢 {DEFAULT_STATUS}
+              {/* RED slot — always rendered, always on top */}
+              <div style={{ background: red ? colors.redDark : "#1a1a1a", borderRadius: 10, padding: "16px 14px", margin: "0 4px 4px", border: red ? "none" : "1px dashed #3a3a3a" }}>
+                {red ? (
+                  <>
+                    <p style={{ margin: 0, fontSize: 19, fontWeight: 900, color: colors.white, lineHeight: 1.4 }}>
+                      🔴 ติดที่ {red.position_text}
+                    </p>
+                    <p style={{ margin: "4px 0 10px", fontSize: 12, color: "#e8b3b1" }}>
+                      อัปเดตเมื่อ {Math.max(0, Math.floor((now - red.timestamp) / 60000))} นาทีที่แล้ว
+                    </p>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <button
+                        onClick={() => handleVote(level, "red", true)}
+                        style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
+                      >
+                        👍 แม่นยำ ({red.upvotes || 0})
+                      </button>
+                      <button
+                        onClick={() => handleVote(level, "red", false)}
+                        style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
+                      >
+                        👎 มั่วแล้ว ({red.downvotes || 0})
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#6a6a6a", lineHeight: 1.4 }}>
+                    🔴 ยังไม่มีรายงานรถติด
                   </p>
-                </div>
-              )}
-              {red && (
-                <div style={{ background: colors.redDark, borderRadius: 10, padding: "16px 14px", margin: "0 4px 4px" }}>
-                  <p style={{ margin: 0, fontSize: 19, fontWeight: 900, color: colors.white, lineHeight: 1.4 }}>
-                    🔴 ติดที่ {red.position_text}
+                )}
+              </div>
+
+              {/* GREEN slot — always rendered, always on bottom */}
+              <div style={{ background: green ? colors.greenDark : "#1a1a1a", borderRadius: 10, padding: "16px 14px", margin: "0 4px 4px", border: green ? "none" : "1px dashed #3a3a3a" }}>
+                {green ? (
+                  <>
+                    <p style={{ margin: 0, fontSize: 19, fontWeight: 900, color: colors.white, lineHeight: 1.4 }}>
+                      🟢 โล่งที่ {green.position_text}
+                    </p>
+                    <p style={{ margin: "4px 0 10px", fontSize: 12, color: "#b3e0c2" }}>
+                      อัปเดตเมื่อ {Math.max(0, Math.floor((now - green.timestamp) / 60000))} นาทีที่แล้ว
+                    </p>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <button
+                        onClick={() => handleVote(level, "green", true)}
+                        style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
+                      >
+                        👍 แม่นยำ ({green.upvotes || 0})
+                      </button>
+                      <button
+                        onClick={() => handleVote(level, "green", false)}
+                        style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
+                      >
+                        👎 มั่วแล้ว ({green.downvotes || 0})
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#6a6a6a", lineHeight: 1.4 }}>
+                    🟢 ยังไม่มีรายงานรถโล่ง
                   </p>
-                  <p style={{ margin: "4px 0 10px", fontSize: 12, color: "#e8b3b1" }}>
-                    อัปเดตเมื่อ {Math.max(0, Math.floor((now - red.timestamp) / 60000))} นาทีที่แล้ว
-                  </p>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <button
-                      onClick={() => handleVote(level, "red", true)}
-                      style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
-                    >
-                      👍 แม่นยำ ({red.upvotes || 0})
-                    </button>
-                    <button
-                      onClick={() => handleVote(level, "red", false)}
-                      style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
-                    >
-                      👎 มั่วแล้ว ({red.downvotes || 0})
-                    </button>
-                  </div>
-                </div>
-              )}
-              {green && (
-                <div style={{ background: colors.greenDark, borderRadius: 10, padding: "16px 14px", margin: "0 4px 4px" }}>
-                  <p style={{ margin: 0, fontSize: 19, fontWeight: 900, color: colors.white, lineHeight: 1.4 }}>
-                    🟢 โล่งที่ {green.position_text}
-                  </p>
-                  <p style={{ margin: "4px 0 10px", fontSize: 12, color: "#b3e0c2" }}>
-                    อัปเดตเมื่อ {Math.max(0, Math.floor((now - green.timestamp) / 60000))} นาทีที่แล้ว
-                  </p>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <button
-                      onClick={() => handleVote(level, "green", true)}
-                      style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
-                    >
-                      👍 แม่นยำ ({green.upvotes || 0})
-                    </button>
-                    <button
-                      onClick={() => handleVote(level, "green", false)}
-                      style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
-                    >
-                      👎 มั่วแล้ว ({green.downvotes || 0})
-                    </button>
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           );
         })()}
