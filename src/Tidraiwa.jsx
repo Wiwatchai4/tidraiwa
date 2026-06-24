@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { storage } from "./firebase.js";
 
 // ---------- constants ----------
-const ADMIN_PASSWORD = "1234"; // prototype-only, replace before real deployment
+const ADMIN_PASSWORD = "khag431062"; // prototype-only, replace before real deployment
 const COOLDOWN_MS = 15 * 60 * 1000;
 const EXPIRE_MS = 20 * 60 * 1000;
 const DEFAULT_STATUS = "ทางสะดวก / ไม่มีรายงานรถติด";
