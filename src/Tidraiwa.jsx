@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { storage } from "./firebase.js";
 
 // ---------- constants ----------
-const ADMIN_PASSWORD = "khag431062"; // prototype-only, replace before real deployment
+const ADMIN_PASSWORD = "1234"; // prototype-only, replace before real deployment
 const COOLDOWN_MS = 15 * 60 * 1000;
 const EXPIRE_MS = 20 * 60 * 1000;
 const DEFAULT_STATUS = "ทางสะดวก / ไม่มีรายงานรถติด";
@@ -168,6 +168,7 @@ export default function Tidraiwa() {
   // ---------- app routing state ----------
   const [screen, setScreen] = useState("loading"); // loading | welcome | main
   const [direction, setDirection] = useState("inbound");
+  const [selectedLevel, setSelectedLevel] = useState("tollway"); // tollway | local — which road level is shown
   const [user, setUser] = useState(null);
   const deviceId = useRef(getDeviceId());
 
@@ -179,7 +180,15 @@ export default function Tidraiwa() {
   const [formError, setFormError] = useState("");
 
   // ---------- reports state ----------
-  const [reports, setReports] = useState({ tollway: null, local: null }); // active report per level
+  // Each level (tollway/local) now holds TWO independent reports: one for the
+  // latest "red" (stuck) sighting and one for the latest "green" (clear)
+  // sighting. They are reported and expire independently — a "clear at X"
+  // report does not overwrite a "stuck at Y" report, since they describe
+  // different points on the road that can both be true at once.
+  const [reports, setReports] = useState({
+    tollway: { red: null, green: null },
+    local: { red: null, green: null },
+  });
   const [votedIds, setVotedIds] = useState(new Set());
   const [cooldownUntil, setCooldownUntil] = useState(0);
   const [now, setNow] = useState(Date.now());
@@ -245,12 +254,14 @@ export default function Tidraiwa() {
   useEffect(() => {
     setReports((prev) => {
       let changed = false;
-      const next = { ...prev };
+      const next = { tollway: { ...prev.tollway }, local: { ...prev.local } };
       for (const level of ["tollway", "local"]) {
-        const r = prev[level];
-        if (r && now - r.timestamp > EXPIRE_MS) {
-          next[level] = null;
-          changed = true;
+        for (const color of ["red", "green"]) {
+          const r = prev[level][color];
+          if (r && now - r.timestamp > EXPIRE_MS) {
+            next[level][color] = null;
+            changed = true;
+          }
         }
       }
       return changed ? next : prev;
@@ -261,17 +272,23 @@ export default function Tidraiwa() {
     try {
       const result = await storage.list("report:");
       const keys = result?.keys || [];
-      const byLevel = { tollway: null, local: null };
+      const byLevel = {
+        tollway: { red: null, green: null },
+        local: { red: null, green: null },
+      };
       for (const k of keys) {
-        const dirLevel = k.replace("report:", ""); // e.g. inbound_tollway
-        if (!dirLevel.startsWith(direction)) continue;
-        const level = dirLevel.endsWith("tollway") ? "tollway" : "local";
+        // key shape: report:<direction>_<level>_<color>
+        const rest = k.replace("report:", "");
+        if (!rest.startsWith(direction)) continue;
+        const level = rest.includes("_tollway_") ? "tollway" : rest.includes("_local_") ? "local" : null;
+        const color = rest.endsWith("_red") ? "red" : rest.endsWith("_green") ? "green" : null;
+        if (!level || !color) continue;
         try {
           const res = await storage.get(k);
           if (res?.value) {
             const parsed = JSON.parse(res.value);
             if (Date.now() - parsed.timestamp <= EXPIRE_MS) {
-              byLevel[level] = parsed;
+              byLevel[level][color] = parsed;
             }
           }
         } catch (e) {}
@@ -315,10 +332,22 @@ export default function Tidraiwa() {
     []
   );
 
+  // Builds a spoken/displayed summary for one level (tollway/local) combining
+  // both the latest "stuck" and "clear" reports — they're independent, so
+  // both can have something to say at once, or either can be empty.
+  function describeLevelStatus(level) {
+    const r = reports[level];
+    const parts = [];
+    if (r.red) parts.push(`ติดที่ ${r.red.position_text}`);
+    if (r.green) parts.push(`โล่งที่ ${r.green.position_text}`);
+    if (parts.length === 0) return DEFAULT_STATUS;
+    return parts.join(" ");
+  }
+
   useEffect(() => {
     if (screen !== "main") return;
-    const tollText = reports.tollway?.status_text || DEFAULT_STATUS;
-    const localText = reports.local?.status_text || DEFAULT_STATUS;
+    const tollText = describeLevelStatus("tollway");
+    const localText = describeLevelStatus("local");
     const key = tollText + "|" + localText + "|" + direction;
     if (key === lastSpokenKey.current) return;
     lastSpokenKey.current = key;
@@ -430,27 +459,31 @@ export default function Tidraiwa() {
       setTimeout(() => setToast(""), 2000);
       return;
     }
-    const levelLabelShort = level === "tollway" ? "บนโทลล์เวย์" : "ทางราบล่าง";
-    const statusText = `${levelLabelShort}: ${statusOpt.color === "red" ? "ติด" : "โล่ง"} ${positionText}`;
     const report = {
       id: statusId + "_" + level + "_" + Date.now(),
       direction,
       level,
-      status_text: statusText,
+      color: statusOpt.color,
+      // position_text is just the place name (e.g. "ที่ สุทธิสาร") — the
+      // red/green meaning is carried by which key it's stored under, not by
+      // this text, so the UI can label it "ติดที่ ..." or "โล่งที่ ..." itself.
+      position_text: positionText,
       timestamp: Date.now(),
       device_id: deviceId.current,
       upvotes: 0,
       downvotes: 0,
-      color: statusOpt.color,
     };
     try {
-      await storage.set(`report:${direction}_${level}`, JSON.stringify(report));
+      await storage.set(`report:${direction}_${level}_${statusOpt.color}`, JSON.stringify(report));
     } catch (e) {
       setToast("ไม่สามารถบันทึกรายงานได้ ลองใหม่อีกครั้ง");
       setTimeout(() => setToast(""), 2500);
       return;
     }
-    setReports((prev) => ({ ...prev, [level]: report }));
+    setReports((prev) => ({
+      ...prev,
+      [level]: { ...prev[level], [statusOpt.color]: report },
+    }));
     const until = Date.now() + COOLDOWN_MS;
     setCooldownUntil(until);
     localSet("tdrw_cooldown_until", String(until));
@@ -459,8 +492,8 @@ export default function Tidraiwa() {
     closeReportModal();
   }
 
-  async function handleVote(level, isUp) {
-    const report = reports[level];
+  async function handleVote(level, color, isUp) {
+    const report = reports[level][color];
     if (!report) return;
     if (votedIds.has(report.id)) {
       setToast("คุณโหวตรายงานนี้ไปแล้ว");
@@ -478,17 +511,17 @@ export default function Tidraiwa() {
 
     if (!isUp && updated.downvotes >= 3) {
       try {
-        await storage.delete(`report:${direction}_${level}`);
+        await storage.delete(`report:${direction}_${level}_${color}`);
       } catch (e) {}
-      setReports((prev) => ({ ...prev, [level]: null }));
+      setReports((prev) => ({ ...prev, [level]: { ...prev[level], [color]: null } }));
       setToast("ข้อมูลถูกรีเซ็ตเนื่องจากมีผู้แจ้งว่าไม่ถูกต้อง");
       setTimeout(() => setToast(""), 2500);
       return;
     }
     try {
-      await storage.set(`report:${direction}_${level}`, JSON.stringify(updated));
+      await storage.set(`report:${direction}_${level}_${color}`, JSON.stringify(updated));
     } catch (e) {}
-    setReports((prev) => ({ ...prev, [level]: updated }));
+    setReports((prev) => ({ ...prev, [level]: { ...prev[level], [color]: updated } }));
   }
 
   // ---------- admin ----------
@@ -514,12 +547,14 @@ export default function Tidraiwa() {
   async function handleResetAll() {
     for (const dir of Object.keys(DIRECTIONS)) {
       for (const level of ["tollway", "local"]) {
-        try {
-          await storage.delete(`report:${dir}_${level}`);
-        } catch (e) {}
+        for (const color of ["red", "green"]) {
+          try {
+            await storage.delete(`report:${dir}_${level}_${color}`);
+          } catch (e) {}
+        }
       }
     }
-    setReports({ tollway: null, local: null });
+    setReports({ tollway: { red: null, green: null }, local: { red: null, green: null } });
     setToast("รีเซ็ตข้อมูลทั้งหมดแล้ว");
     setTimeout(() => setToast(""), 2000);
     setAdminOpen(false);
@@ -724,7 +759,7 @@ export default function Tidraiwa() {
       </div>
 
       {/* direction toggle */}
-      <div style={{ display: "flex", gap: 8, padding: "8px 16px 16px" }}>
+      <div style={{ display: "flex", gap: 8, padding: "8px 16px 12px" }}>
         {Object.entries(DIRECTIONS).map(([key, d]) => (
           <button
             key={key}
@@ -746,46 +781,103 @@ export default function Tidraiwa() {
         ))}
       </div>
 
-      {/* signboard */}
+      {/* level toggle (tollway vs local) — pick one to view, keeps the screen
+          focused on a single road level for fast reading */}
+      <div style={{ display: "flex", gap: 8, padding: "0 16px 16px" }}>
+        {[
+          { key: "tollway", label: "🛣️ โทลล์เวย์ (บน)", accent: colors.yellow, accentDark: colors.yellowDark },
+          { key: "local", label: "🚗 ทางราบ (ล่าง)", accent: colors.blue, accentDark: colors.blueDark },
+        ].map((opt) => (
+          <button
+            key={opt.key}
+            onClick={() => setSelectedLevel(opt.key)}
+            style={{
+              flex: 1,
+              fontSize: 15,
+              fontWeight: 800,
+              padding: "14px 8px",
+              borderRadius: 12,
+              border: selectedLevel === opt.key ? `3px solid ${opt.accent}` : "2px solid #333",
+              background: selectedLevel === opt.key ? opt.accentDark : "#1a1a1a",
+              color: colors.white,
+              cursor: "pointer",
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {/* signboard — shows only the selected level, with status rows
+          color-filled (not just colored text) so red/green reads instantly */}
       <div style={{ padding: "0 16px" }}>
-        {["tollway", "local"].map((level) => {
-          const r = reports[level];
-          const text = r?.status_text || DEFAULT_STATUS;
-          const isClear = !r;
-          const accent = isClear ? colors.green : colors.red;
+        {(() => {
+          const level = selectedLevel;
+          const red = reports[level].red;
+          const green = reports[level].green;
+          const hasAny = red || green;
           return (
-            <div key={level} style={{ background: "#111", border: `2px solid ${accent}`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
-              <p style={{ margin: "0 0 10px", fontSize: 15, fontWeight: 800, color: colors.gray }}>{levelLabel[level]}</p>
-              <div style={{ background: "#000", borderRadius: 10, padding: "14px 12px", fontFamily: "monospace" }}>
-                <p style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 900, color: isClear ? colors.green : colors.red, lineHeight: 1.4 }}>
-                  {isClear ? "🟢" : "🔴"} {text}
-                </p>
-                {r && (
-                  <p style={{ margin: 0, fontSize: 12, color: colors.gray }}>
-                    อัปเดตเมื่อ {Math.max(0, Math.floor((now - r.timestamp) / 60000))} นาทีที่แล้ว · จะหมดอายุอัตโนมัติใน{" "}
-                    {Math.max(0, Math.ceil((EXPIRE_MS - (now - r.timestamp)) / 60000))} นาที
+            <div style={{ borderRadius: 14, padding: 4, marginBottom: 14, background: "#111", border: `2px solid ${hasAny ? colors.red : colors.green}` }}>
+              <p style={{ margin: "10px 12px 10px", fontSize: 15, fontWeight: 800, color: colors.gray }}>{levelLabel[level]}</p>
+
+              {!hasAny && (
+                <div style={{ background: colors.greenDark, borderRadius: 10, padding: "16px 14px", margin: "0 4px 4px" }}>
+                  <p style={{ margin: 0, fontSize: 19, fontWeight: 900, color: colors.white, lineHeight: 1.4 }}>
+                    🟢 {DEFAULT_STATUS}
                   </p>
-                )}
-              </div>
-              {r && (
-                <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-                  <button
-                    onClick={() => handleVote(level, true)}
-                    style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid #333", background: "#1a1a1a", color: colors.white, cursor: "pointer" }}
-                  >
-                    👍 แม่นยำ ตรงจริง ({r.upvotes || 0})
-                  </button>
-                  <button
-                    onClick={() => handleVote(level, false)}
-                    style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid #333", background: "#1a1a1a", color: colors.white, cursor: "pointer" }}
-                  >
-                    👎 มั่วแล้ว/เก่า ({r.downvotes || 0})
-                  </button>
+                </div>
+              )}
+              {red && (
+                <div style={{ background: colors.redDark, borderRadius: 10, padding: "16px 14px", margin: "0 4px 4px" }}>
+                  <p style={{ margin: 0, fontSize: 19, fontWeight: 900, color: colors.white, lineHeight: 1.4 }}>
+                    🔴 ติดที่ {red.position_text}
+                  </p>
+                  <p style={{ margin: "4px 0 10px", fontSize: 12, color: "#e8b3b1" }}>
+                    อัปเดตเมื่อ {Math.max(0, Math.floor((now - red.timestamp) / 60000))} นาทีที่แล้ว
+                  </p>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button
+                      onClick={() => handleVote(level, "red", true)}
+                      style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
+                    >
+                      👍 แม่นยำ ({red.upvotes || 0})
+                    </button>
+                    <button
+                      onClick={() => handleVote(level, "red", false)}
+                      style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
+                    >
+                      👎 มั่วแล้ว ({red.downvotes || 0})
+                    </button>
+                  </div>
+                </div>
+              )}
+              {green && (
+                <div style={{ background: colors.greenDark, borderRadius: 10, padding: "16px 14px", margin: "0 4px 4px" }}>
+                  <p style={{ margin: 0, fontSize: 19, fontWeight: 900, color: colors.white, lineHeight: 1.4 }}>
+                    🟢 โล่งที่ {green.position_text}
+                  </p>
+                  <p style={{ margin: "4px 0 10px", fontSize: 12, color: "#b3e0c2" }}>
+                    อัปเดตเมื่อ {Math.max(0, Math.floor((now - green.timestamp) / 60000))} นาทีที่แล้ว
+                  </p>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button
+                      onClick={() => handleVote(level, "green", true)}
+                      style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
+                    >
+                      👍 แม่นยำ ({green.upvotes || 0})
+                    </button>
+                    <button
+                      onClick={() => handleVote(level, "green", false)}
+                      style={{ flex: 1, fontSize: 13, fontWeight: 700, padding: "8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.25)", color: colors.white, cursor: "pointer" }}
+                    >
+                      👎 มั่วแล้ว ({green.downvotes || 0})
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
           );
-        })}
+        })()}
       </div>
 
       {/* cooldown banner */}
@@ -795,18 +887,15 @@ export default function Tidraiwa() {
         </div>
       )}
 
-      {/* quick report grid */}
+      {/* quick report grid — only shows buttons for the currently selected
+          level, so the person reports for the road they're actually on */}
       <div style={{ padding: "8px 16px" }}>
-        <p style={{ fontSize: 16, fontWeight: 800, margin: "8px 0", color: colors.yellow }}>⬛ โซนเหลือง: รายงานโทลล์เวย์</p>
-        <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
-          <BigStatusButton status={STATUS_OPTIONS[0]} disabled={onCooldown} onClick={() => openReportModal("tollway", "red")} colors={colors} />
-          <BigStatusButton status={STATUS_OPTIONS[1]} disabled={onCooldown} onClick={() => openReportModal("tollway", "green")} colors={colors} />
-        </div>
-
-        <p style={{ fontSize: 16, fontWeight: 800, margin: "8px 0", color: colors.blue }}>⬛ โซนน้ำเงิน: รายงานทางราบล่าง</p>
+        <p style={{ fontSize: 16, fontWeight: 800, margin: "8px 0" }}>
+          รายงานสถานะ {selectedLevel === "tollway" ? "บนโทลล์เวย์" : "ทางราบล่าง"}
+        </p>
         <div style={{ display: "flex", gap: 10 }}>
-          <BigStatusButton status={STATUS_OPTIONS[0]} disabled={onCooldown} onClick={() => openReportModal("local", "red")} colors={colors} />
-          <BigStatusButton status={STATUS_OPTIONS[1]} disabled={onCooldown} onClick={() => openReportModal("local", "green")} colors={colors} />
+          <BigStatusButton status={STATUS_OPTIONS[0]} disabled={onCooldown} onClick={() => openReportModal(selectedLevel, "red")} colors={colors} />
+          <BigStatusButton status={STATUS_OPTIONS[1]} disabled={onCooldown} onClick={() => openReportModal(selectedLevel, "green")} colors={colors} />
         </div>
         <p style={{ fontSize: 12, color: colors.gray, marginTop: 10 }}>
           กดสถานะ แอพจะระบุตำแหน่งให้อัตโนมัติจาก GPS เครื่องคุณ (ไม่ต้องพิมพ์)
