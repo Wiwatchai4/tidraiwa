@@ -2,8 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { storage } from "./firebase.js";
 
 // ---------- constants ----------
-const ADMIN_PASSWORD = "1234"; // prototype-only, replace before real deployment
-const COOLDOWN_MS = 15 * 60 * 1000;
+const ADMIN_PASSWORD = "khag431062"; // change this before sharing the app widely
+const COOLDOWN_MS = 10 * 60 * 1000; // per-color cooldown — red and green are tracked independently
 const EXPIRE_MS = 20 * 60 * 1000;
 const DEFAULT_STATUS = "ทางสะดวก / ไม่มีรายงานรถติด";
 
@@ -77,27 +77,51 @@ const DIRECTIONS = {
 const VEHICLES = [
   { id: "moto", label: "รถจักรยานยนต์ / ไรเดอร์", icon: "🏍️" },
   { id: "car", label: "รถยนต์ส่วนบุคคล", icon: "🚗" },
+  { id: "taxi", label: "แท็กซี่ / รับจ้าง / เรียกผ่านแอป", icon: "🚕" },
   { id: "van", label: "รถโดยสารสาธารณะ / รถตู้", icon: "🚌" },
+  { id: "truck", label: "รถส่งของ / รถบรรทุก", icon: "📦" },
 ];
 
-// Landmark reference points along Vibhavadi Road, with approximate coordinates.
-// These are fixed in code (free) so we never need a paid geocoding API call.
-// Ordered south (Din Daeng) -> north (Rangsit / Don Mueang) along the road.
-const LANDMARKS = {
-  tollway: [
-    { id: "tl_dindaeng", name: "ดินแดง", lat: 13.7715, lng: 100.5602 },
-    { id: "tl_phahon", name: "อนุสรณ์สถาน", lat: 13.8367, lng: 100.5707 },
-    { id: "tl_kaset", name: "แยกเกษตร", lat: 13.8469, lng: 100.5713 },
-    { id: "tl_laksi", name: "หลักสี่", lat: 13.8801, lng: 100.5757 },
-    { id: "tl_donmueang", name: "ดอนเมือง", lat: 13.9126, lng: 100.6068 },
+// Landmark reference points along Vibhavadi Road — confirmed by someone who
+// drives this route regularly, listed south (Din Daeng) -> north (Rangsit).
+// Each DIRECTION has its own landmark list (not shared with the opposite
+// direction) because drivers actually recognize different sets of points
+// depending on which way they're facing — e.g. "การบินไทย" is a clear sight
+// only from the inbound side. Both tollway and local use the same list per
+// direction since these are general road-side landmarks visible from either
+// level, not local-road-only or tollway-only points.
+// Coordinates are best-effort approximations for landmarks without a
+// precisely verified address; a few (e.g. Wat Samian Nari) are confirmed
+// exact from public sources.
+const LANDMARK_SETS = {
+  outbound: [
+    // มุ่งหน้ารังสิต
+    { id: "ob_dindaeng", name: "ทางด่วนดินแดง", lat: 13.7715, lng: 100.5602 },
+    { id: "ob_sutthisan", name: "แยกสุทธิสาร", lat: 13.7945, lng: 100.5663 },
+    { id: "ob_ladprao5", name: "ห้าแยกลาดพร้าว", lat: 13.8161, lng: 100.5690 },
+    { id: "ob_ratchwipha", name: "แยกต่างระดับรัชวิภา", lat: 13.8280, lng: 100.5700 },
+    { id: "ob_watsamian", name: "แยกวัดเสมียนนารี", lat: 13.8398, lng: 100.5562 },
+    { id: "ob_bangkhen", name: "แยกบางเขน", lat: 13.8469, lng: 100.5713 },
+    { id: "ob_laksi", name: "แยกหลักสี่", lat: 13.8801, lng: 100.5757 },
+    { id: "ob_donmueang_station", name: "สถานีดอนเมือง", lat: 13.9126, lng: 100.6068 },
+    { id: "ob_simummeuang", name: "ตลาดสี่มุมเมือง", lat: 13.9700, lng: 100.6150 },
+    { id: "ob_makro_rangsit", name: "แม็คโคร รังสิต", lat: 13.9850, lng: 100.6180 },
+    { id: "ob_futurepark", name: "ฟิวเจอร์พาร์ค รังสิต", lat: 13.9963, lng: 100.6197 },
   ],
-  local: [
-    { id: "lo_dindaeng", name: "สี่แยกดินแดง", lat: 13.7715, lng: 100.5602 },
-    { id: "lo_sutthisan", name: "สุทธิสาร", lat: 13.7945, lng: 100.5663 },
-    { id: "lo_ladprao", name: "ลาดพร้าว", lat: 13.8161, lng: 100.5690 },
-    { id: "lo_kaset", name: "แยกเกษตร", lat: 13.8469, lng: 100.5713 },
-    { id: "lo_laksi", name: "หลักสี่", lat: 13.8801, lng: 100.5757 },
-    { id: "lo_donmueang", name: "หน้า ม.เกษตรฯ", lat: 13.8480, lng: 100.5700 },
+  inbound: [
+    // มุ่งหน้าดินแดง
+    { id: "ib_futurepark", name: "ฟิวเจอร์พาร์ค รังสิต", lat: 13.9963, lng: 100.6197 },
+    { id: "ib_zeer", name: "เซียร์ รังสิต", lat: 13.9900, lng: 100.6170 },
+    { id: "ib_donmueang_airport", name: "สนามบินดอนเมือง", lat: 13.9126, lng: 100.6068 },
+    { id: "ib_laksi", name: "แยกหลักสี่", lat: 13.8801, lng: 100.5757 },
+    { id: "ib_kaset_uni", name: "ม.เกษตรศาสตร์ (ใกล้แยกบางเขน)", lat: 13.8469, lng: 100.5713 },
+    { id: "ib_ratchwipha", name: "แยกต่างระดับรัชวิภา", lat: 13.8280, lng: 100.5700 },
+    { id: "ib_shinawatra3", name: "อาคารชินวัตร ทาวเวอร์ 3", lat: 13.8240, lng: 100.5650 },
+    { id: "ib_ladprao5", name: "ห้าแยกลาดพร้าว", lat: 13.8161, lng: 100.5690 },
+    { id: "ib_thaiairways", name: "การบินไทย (สำนักงานใหญ่)", lat: 13.8100, lng: 100.5680 },
+    { id: "ib_sutthisan", name: "แยกสุทธิสาร", lat: 13.7945, lng: 100.5663 },
+    { id: "ib_mitrmaitri", name: "แยกถนนมิตรไมตรี", lat: 13.7820, lng: 100.5630 },
+    { id: "ib_dindaeng", name: "แยกดินแดง", lat: 13.7715, lng: 100.5602 },
   ],
 };
 
@@ -117,12 +141,13 @@ function distanceKm(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Given a user's GPS position and a level (tollway/local), find the nearest
-// landmark and, if a second landmark is close in distance, describe the
-// position as "between A and B, closer to A" — always rendered as names,
-// never raw coordinates.
-function describePosition(level, lat, lng) {
-  const points = LANDMARKS[level];
+// Given a user's GPS position and a direction (inbound/outbound), find the
+// nearest landmark and, if a second landmark is close in distance, describe
+// the position as "between A and B, closer to A" — always rendered as
+// names, never raw coordinates. Landmarks are shared between tollway and
+// local for a given direction (see LANDMARK_SETS comment).
+function describePosition(direction, lat, lng) {
+  const points = LANDMARK_SETS[direction];
   const withDist = points.map((p) => ({ ...p, d: distanceKm(lat, lng, p.lat, p.lng) }));
   withDist.sort((a, b) => a.d - b.d);
   const nearest = withDist[0];
@@ -190,9 +215,22 @@ export default function Tidraiwa() {
     local: { red: null, green: null },
   });
   const [votedIds, setVotedIds] = useState(new Set());
-  const [cooldownUntil, setCooldownUntil] = useState(0);
+  // Cooldown is tracked PER COLOR, not globally — reporting "red" only locks
+  // out the red button for COOLDOWN_MS; "green" stays reportable the whole
+  // time, and vice versa. This matches real driving conditions: a driver can
+  // be stuck reporting "red" at one point, then minutes later pass a point
+  // that's actually clear and report "green" without waiting out a shared
+  // cooldown that was never about the green button to begin with.
+  const [cooldownUntil, setCooldownUntil] = useState({ red: 0, green: 0 });
   const [now, setNow] = useState(Date.now());
   const [toast, setToast] = useState("");
+  // Guards against overlapping refreshReports() calls (e.g. the init load
+  // racing the first poll tick) where an older, slower call could resolve
+  // after a newer one and overwrite fresh state with stale data — which is
+  // what caused the signboard to flash back to "no report" right after
+  // showing a real one. Each call gets an increasing id; only the result
+  // from the most recently STARTED call is allowed to update state.
+  const refreshCallId = useRef(0);
 
   // ---------- report flow state (GPS-first, manual landmark fallback) ----------
   const [reportModal, setReportModal] = useState(null); // { level, statusId } | null
@@ -200,6 +238,14 @@ export default function Tidraiwa() {
   const [locationError, setLocationError] = useState("");
   const [autoPosition, setAutoPosition] = useState(null); // { text, nearest, second }
   const [manualLandmarkId, setManualLandmarkId] = useState(null);
+
+  // ---------- change-vehicle modal state ----------
+  // Lets a returning user update vehicle_type without re-registering (phone
+  // number, consent, etc. stay untouched) — e.g. someone who rides a
+  // motorcycle some days and drives a car on others.
+  const [vehicleModalOpen, setVehicleModalOpen] = useState(false);
+  const [vehicleModalSelection, setVehicleModalSelection] = useState(null);
+  const [vehicleModalStatus, setVehicleModalStatus] = useState("");
 
   // ---------- admin state ----------
   const [titleTapCount, setTitleTapCount] = useState(0);
@@ -222,7 +268,17 @@ export default function Tidraiwa() {
         } catch (e) {}
       }
       const savedCooldown = localGet("tdrw_cooldown_until");
-      if (savedCooldown) setCooldownUntil(parseInt(savedCooldown, 10) || 0);
+      if (savedCooldown) {
+        try {
+          const parsed = JSON.parse(savedCooldown);
+          if (parsed && typeof parsed === "object") {
+            setCooldownUntil({ red: parsed.red || 0, green: parsed.green || 0 });
+          }
+        } catch (e) {
+          // Old format from before per-color cooldowns existed (a plain
+          // number) — discard rather than misapply it to both colors.
+        }
+      }
       const savedVotes = localGet("tdrw_voted_ids");
       if (savedVotes) {
         try {
@@ -269,6 +325,7 @@ export default function Tidraiwa() {
   }, [now]);
 
   async function refreshReports() {
+    const callId = ++refreshCallId.current;
     try {
       const result = await storage.list("report:");
       const keys = result?.keys || [];
@@ -293,6 +350,10 @@ export default function Tidraiwa() {
           }
         } catch (e) {}
       }
+      // If a newer refreshReports() call has started since this one began,
+      // drop this result — it's stale, and applying it would clobber
+      // whatever the newer call (or a just-submitted report) already set.
+      if (callId !== refreshCallId.current) return;
       setReports(byLevel);
     } catch (e) {
       // storage unavailable; keep local state as-is
@@ -380,6 +441,8 @@ export default function Tidraiwa() {
       marketing_consent: marketingConsent,
       core_consent_time: Date.now(),
       device_id: deviceId.current,
+      report_count_red: 0,
+      report_count_green: 0,
     };
     // Local flag so this device isn't asked to register again.
     localSet("tdrw_user", JSON.stringify(userData));
@@ -399,13 +462,47 @@ export default function Tidraiwa() {
     setScreen("main");
   }
 
+  // Updates vehicle_type only, for a returning user who switches vehicles
+  // day to day (e.g. motorcycle some days, car others). Re-encrypts and
+  // re-writes the full user record (phone, consent, report counts, etc.
+  // stay exactly as they were) — nothing else about the account changes.
+  function openVehicleModal() {
+    setVehicleModalSelection(user?.vehicle_type || null);
+    setVehicleModalStatus("");
+    setVehicleModalOpen(true);
+  }
+
+  async function handleChangeVehicle() {
+    if (!vehicleModalSelection) {
+      setVehicleModalStatus("กรุณาเลือกประเภทยานพาหนะ");
+      return;
+    }
+    const updatedUser = { ...user, vehicle_type: vehicleModalSelection };
+    localSet("tdrw_user", JSON.stringify(updatedUser));
+    try {
+      const encrypted = await encryptJson(updatedUser, ADMIN_PASSWORD);
+      await storage.set(`user:${deviceId.current}`, encrypted);
+    } catch (e) {
+      // Local copy is already updated, so the change still applies to this
+      // device's session even if the shared backup write fails (e.g. offline).
+    }
+    setUser(updatedUser);
+    setVehicleModalOpen(false);
+    setToast("เปลี่ยนประเภทยานพาหนะแล้ว");
+    setTimeout(() => setToast(""), 2000);
+  }
+
   // ---------- reporting ----------
-  const cooldownRemaining = Math.max(0, cooldownUntil - now);
-  const onCooldown = cooldownRemaining > 0;
+  // Each color has its own remaining-cooldown value, computed independently.
+  const cooldownRemaining = {
+    red: Math.max(0, cooldownUntil.red - now),
+    green: Math.max(0, cooldownUntil.green - now),
+  };
+  const onCooldown = { red: cooldownRemaining.red > 0, green: cooldownRemaining.green > 0 };
 
   function openReportModal(level, statusId) {
-    if (onCooldown) {
-      setToast(`ส่งรายงานถี่เกินไป รออีก ${Math.ceil(cooldownRemaining / 60000)} นาที`);
+    if (onCooldown[statusId]) {
+      setToast(`ส่งรายงานถี่เกินไป รออีก ${Math.ceil(cooldownRemaining[statusId] / 60000)} นาที`);
       setTimeout(() => setToast(""), 2500);
       return;
     }
@@ -413,10 +510,10 @@ export default function Tidraiwa() {
     setAutoPosition(null);
     setManualLandmarkId(null);
     setLocationError("");
-    requestGpsPosition(level);
+    requestGpsPosition();
   }
 
-  function requestGpsPosition(level) {
+  function requestGpsPosition() {
     if (!("geolocation" in navigator)) {
       setLocationError("อุปกรณ์นี้ไม่รองรับการระบุตำแหน่งอัตโนมัติ กรุณาเลือกจุดด้วยตนเอง");
       return;
@@ -426,7 +523,9 @@ export default function Tidraiwa() {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setLocating(false);
-        const result = describePosition(level, pos.coords.latitude, pos.coords.longitude);
+        // direction comes from the component's current direction toggle —
+        // landmarks are direction-specific (see LANDMARK_SETS), not level-specific.
+        const result = describePosition(direction, pos.coords.latitude, pos.coords.longitude);
         setAutoPosition(result);
       },
       (err) => {
@@ -452,7 +551,7 @@ export default function Tidraiwa() {
     if (autoPosition) {
       positionText = autoPosition.text;
     } else if (manualLandmarkId) {
-      const lm = LANDMARKS[level].find((l) => l.id === manualLandmarkId);
+      const lm = LANDMARK_SETS[direction].find((l) => l.id === manualLandmarkId);
       positionText = lm ? `ที่ ${lm.name}` : "ไม่ระบุตำแหน่ง";
     } else {
       setToast("กรุณาเลือกตำแหน่งก่อนส่งรายงาน");
@@ -485,8 +584,42 @@ export default function Tidraiwa() {
       [level]: { ...prev[level], [statusOpt.color]: report },
     }));
     const until = Date.now() + COOLDOWN_MS;
-    setCooldownUntil(until);
-    localSet("tdrw_cooldown_until", String(until));
+    setCooldownUntil((prev) => {
+      const next = { ...prev, [statusOpt.color]: until };
+      localSet("tdrw_cooldown_until", JSON.stringify(next));
+      return next;
+    });
+
+    // Bump this device's cumulative report_count for the color just
+    // reported (red/green tracked separately — see section 0/6 of the
+    // design notes). This is a "nice to have" stat for future rewards, so a
+    // failure here must never block the report itself from having already
+    // succeeded above.
+    const countField = statusOpt.color === "red" ? "report_count_red" : "report_count_green";
+    try {
+      const key = `user:${deviceId.current}`;
+      const existing = await storage.get(key);
+      if (existing?.value) {
+        const currentUser = await decryptJson(existing.value, ADMIN_PASSWORD);
+        if (currentUser) {
+          const updatedUser = {
+            ...currentUser,
+            [countField]: (currentUser[countField] || 0) + 1,
+          };
+          const encrypted = await encryptJson(updatedUser, ADMIN_PASSWORD);
+          await storage.set(key, encrypted);
+          // Keep the in-memory/local copy in sync too, so the running
+          // session reflects the new count immediately if it's ever shown.
+          localSet("tdrw_user", JSON.stringify(updatedUser));
+          setUser(updatedUser);
+        }
+      }
+    } catch (e) {
+      // Non-fatal: the traffic report above already succeeded. A missed
+      // counter increment just means this report won't be reflected in
+      // that device's report_count until a later successful report.
+    }
+
     setToast("ส่งรายงานแล้ว ขอบคุณค่ะ");
     setTimeout(() => setToast(""), 2000);
     closeReportModal();
@@ -501,8 +634,16 @@ export default function Tidraiwa() {
       return;
     }
     const updated = { ...report };
-    if (isUp) updated.upvotes = (updated.upvotes || 0) + 1;
-    else updated.downvotes = (updated.downvotes || 0) + 1;
+    if (isUp) {
+      updated.upvotes = (updated.upvotes || 0) + 1;
+      // An upvote means someone on the road right now confirms this report
+      // is still accurate — treat that as fresh confirmation and reset the
+      // expiry clock, so a report that's been true for 18 minutes doesn't
+      // vanish 2 minutes after someone just vouched for it.
+      updated.timestamp = Date.now();
+    } else {
+      updated.downvotes = (updated.downvotes || 0) + 1;
+    }
 
     const newVoted = new Set(votedIds);
     newVoted.add(report.id);
@@ -522,6 +663,10 @@ export default function Tidraiwa() {
       await storage.set(`report:${direction}_${level}_${color}`, JSON.stringify(updated));
     } catch (e) {}
     setReports((prev) => ({ ...prev, [level]: { ...prev[level], [color]: updated } }));
+    if (isUp) {
+      setToast("ยืนยันแล้ว ขอบคุณค่ะ — ต่ออายุรายงานนี้ออกไปอีก 20 นาที");
+      setTimeout(() => setToast(""), 2500);
+    }
   }
 
   // ---------- admin ----------
@@ -576,7 +721,7 @@ export default function Tidraiwa() {
         setTimeout(() => setExportStatus(""), 2500);
         return;
       }
-      const rows = [["phone_number", "vehicle_type", "register_time", "marketing_consent", "device_id"]];
+      const rows = [["phone_number", "vehicle_type", "register_time", "marketing_consent", "device_id", "report_count_red", "report_count_green"]];
       let failCount = 0;
       for (const k of keys) {
         try {
@@ -593,6 +738,8 @@ export default function Tidraiwa() {
               u.register_time ? new Date(u.register_time).toISOString() : "",
               u.marketing_consent ? "yes" : "no",
               u.device_id || "",
+              u.report_count_red || 0,
+              u.report_count_green || 0,
             ]);
           }
         } catch (e) {
@@ -749,13 +896,35 @@ export default function Tidraiwa() {
   return (
     <div style={{ minHeight: 600, background: colors.bg, color: colors.white, fontFamily: "system-ui, -apple-system, sans-serif", paddingBottom: 40 }}>
       {/* header */}
-      <div style={{ padding: "16px 16px 8px", textAlign: "center" }}>
+      <div style={{ padding: "16px 16px 8px", textAlign: "center", position: "relative" }}>
         <h1 onClick={handleTitleTap} style={{ fontSize: 26, fontWeight: 900, margin: 0, cursor: "pointer", userSelect: "none" }}>
           ติดไรวะ
         </h1>
         {!ttsSupported && (
           <p style={{ fontSize: 11, color: colors.gray, margin: "4px 0 0" }}>เสียงพูดไม่พร้อมใช้งานบนอุปกรณ์นี้ — ใช้ป้ายข้อความแทน</p>
         )}
+        <button
+          onClick={openVehicleModal}
+          style={{
+            position: "absolute",
+            right: 12,
+            top: 14,
+            fontSize: 13,
+            fontWeight: 700,
+            padding: "8px 12px",
+            borderRadius: 20,
+            border: "1px solid #333",
+            background: "#1a1a1a",
+            color: colors.white,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <span style={{ fontSize: 16 }}>{VEHICLES.find((v) => v.id === user?.vehicle_type)?.icon || "🚗"}</span>
+          เปลี่ยนรถ
+        </button>
       </div>
 
       {/* direction toggle */}
@@ -890,10 +1059,11 @@ export default function Tidraiwa() {
         })()}
       </div>
 
-      {/* cooldown banner */}
-      {onCooldown && (
+      {/* cooldown banner — shown per color, since red and green cool down independently */}
+      {(onCooldown.red || onCooldown.green) && (
         <div style={{ margin: "0 16px 12px", padding: "10px 14px", background: colors.yellowDark, borderRadius: 10, fontSize: 13, fontWeight: 700, textAlign: "center" }}>
-          ส่งรายงานล่าสุดไปแล้ว รออีก {Math.ceil(cooldownRemaining / 60000)} นาทีก่อนส่งใหม่
+          {onCooldown.red && <div>🔴 รออีก {Math.ceil(cooldownRemaining.red / 60000)} นาที ก่อนรายงาน "ติด" ใหม่</div>}
+          {onCooldown.green && <div>🟢 รออีก {Math.ceil(cooldownRemaining.green / 60000)} นาที ก่อนรายงาน "โล่ง" ใหม่</div>}
         </div>
       )}
 
@@ -904,8 +1074,8 @@ export default function Tidraiwa() {
           รายงานสถานะ {selectedLevel === "tollway" ? "บนโทลล์เวย์" : "ทางราบล่าง"}
         </p>
         <div style={{ display: "flex", gap: 10 }}>
-          <BigStatusButton status={STATUS_OPTIONS[0]} disabled={onCooldown} onClick={() => openReportModal(selectedLevel, "red")} colors={colors} />
-          <BigStatusButton status={STATUS_OPTIONS[1]} disabled={onCooldown} onClick={() => openReportModal(selectedLevel, "green")} colors={colors} />
+          <BigStatusButton status={STATUS_OPTIONS[0]} disabled={onCooldown.red} onClick={() => openReportModal(selectedLevel, "red")} colors={colors} />
+          <BigStatusButton status={STATUS_OPTIONS[1]} disabled={onCooldown.green} onClick={() => openReportModal(selectedLevel, "green")} colors={colors} />
         </div>
         <p style={{ fontSize: 12, color: colors.gray, marginTop: 10 }}>
           กดสถานะ แอพจะระบุตำแหน่งให้อัตโนมัติจาก GPS เครื่องคุณ (ไม่ต้องพิมพ์)
@@ -916,6 +1086,52 @@ export default function Tidraiwa() {
       {toast && (
         <div style={{ position: "sticky", bottom: 12, margin: "16px", padding: "12px 16px", background: "#222", border: "1px solid #444", borderRadius: 10, fontSize: 14, fontWeight: 700, textAlign: "center" }}>
           {toast}
+        </div>
+      )}
+
+      {/* change-vehicle modal — lets a returning user update vehicle_type
+          without re-registering (phone, consent, etc. stay untouched) */}
+      {vehicleModalOpen && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 20 }}>
+          <div style={{ background: "#1a1a1a", borderRadius: 16, padding: 24, width: "100%", maxWidth: 360, border: "2px solid #444" }}>
+            <p style={{ fontSize: 18, fontWeight: 800, margin: "0 0 16px" }}>เปลี่ยนประเภทยานพาหนะ</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+              {VEHICLES.map((v) => (
+                <button
+                  key={v.id}
+                  onClick={() => setVehicleModalSelection(v.id)}
+                  style={{
+                    fontSize: 16,
+                    fontWeight: 700,
+                    padding: "14px",
+                    borderRadius: 12,
+                    border: vehicleModalSelection === v.id ? `2px solid ${colors.yellow}` : "1px solid #333",
+                    background: vehicleModalSelection === v.id ? "#3a3206" : "#111",
+                    color: colors.white,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    cursor: "pointer",
+                  }}
+                >
+                  <span style={{ fontSize: 22 }}>{v.icon}</span>
+                  {v.label}
+                </button>
+              ))}
+            </div>
+            {vehicleModalStatus && <p style={{ fontSize: 13, color: colors.yellow, marginBottom: 12 }}>{vehicleModalStatus}</p>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={handleChangeVehicle}
+                style={{ flex: 1, padding: 14, borderRadius: 10, border: "none", background: colors.green, color: colors.white, fontWeight: 800, fontSize: 15, cursor: "pointer" }}
+              >
+                บันทึก
+              </button>
+              <button onClick={() => setVehicleModalOpen(false)} style={{ flex: 1, padding: 14, borderRadius: 10, border: "1px solid #444", background: "transparent", color: colors.white, cursor: "pointer" }}>
+                ยกเลิก
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -949,7 +1165,7 @@ export default function Tidraiwa() {
                 {locationError && <p style={{ fontSize: 13, color: colors.yellow, marginBottom: 10 }}>{locationError}</p>}
                 <p style={{ fontSize: 13, color: colors.gray, marginBottom: 8 }}>เลือกจุดที่ใกล้ที่สุดด้วยตนเอง</p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 220, overflowY: "auto" }}>
-                  {LANDMARKS[reportModal.level].map((lm) => (
+                  {LANDMARK_SETS[direction].map((lm) => (
                     <button
                       key={lm.id}
                       onClick={() => setManualLandmarkId(lm.id)}
