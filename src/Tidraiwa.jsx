@@ -146,6 +146,13 @@ function distanceKm(lat1, lng1, lat2, lng2) {
 // the position as "between A and B, closer to A" — always rendered as
 // names, never raw coordinates. Landmarks are shared between tollway and
 // local for a given direction (see LANDMARK_SETS comment).
+//
+// Returns both:
+//  - `text`: includes the leading "ที่ " — used in the confirm-position
+//    modal where it reads naturally on its own ("ที่ สุทธิสาร").
+//  - `place`: the same description WITHOUT a leading "ที่ " — used when the
+//    signboard already supplies its own prefix ("ติดที่ " / "โล่งที่ "), so
+//    concatenating doesn't produce "ติดที่ ที่ สุทธิสาร".
 function describePosition(direction, lat, lng) {
   const points = LANDMARK_SETS[direction];
   const withDist = points.map((p) => ({ ...p, d: distanceKm(lat, lng, p.lat, p.lng) }));
@@ -153,10 +160,11 @@ function describePosition(direction, lat, lng) {
   const nearest = withDist[0];
   const second = withDist[1];
   if (!second || nearest.d < 0.5) {
-    return { text: `ที่ ${nearest.name}`, nearest, second: null };
+    return { text: `ที่ ${nearest.name}`, place: nearest.name, nearest, second: null };
   }
   // closer point named first
-  return { text: `ช่วง ${nearest.name} ↔ ${second.name} (ใกล้ ${nearest.name} มากกว่า)`, nearest, second };
+  const place = `ช่วง ${nearest.name} ↔ ${second.name} (ใกล้ ${nearest.name} มากกว่า)`;
+  return { text: `ที่ ${place}`, place, nearest, second };
 }
 
 // ---------- small local helpers (per-device, not shared) ----------
@@ -205,15 +213,29 @@ export default function Tidraiwa() {
   const [formError, setFormError] = useState("");
 
   // ---------- reports state ----------
-  // Each level (tollway/local) now holds TWO independent reports: one for the
-  // latest "red" (stuck) sighting and one for the latest "green" (clear)
-  // sighting. They are reported and expire independently — a "clear at X"
-  // report does not overwrite a "stuck at Y" report, since they describe
-  // different points on the road that can both be true at once.
-  const [reports, setReports] = useState({
+  // Holds BOTH directions' data simultaneously — { inbound: {...}, outbound:
+  // {...} } — rather than just whichever direction was last fetched. This
+  // is deliberate: with only one direction's data in state at a time, the
+  // UI depended on refreshReports() finishing at the right moment whenever
+  // `direction` changed, and any timing slip (slow network, overlapping
+  // fetches) could leave the wrong direction's data on screen, or have the
+  // screen flash to "no report" while the new fetch was in flight. Keeping
+  // both directions in state at once means switching the direction tab is
+  // just picking which half of state to render — no fetch, no timing
+  // window, no possibility of showing the wrong direction's data.
+  // Each direction still holds { tollway: {red, green}, local: {red, green} }.
+  const emptyLevels = () => ({
     tollway: { red: null, green: null },
     local: { red: null, green: null },
   });
+  const [reportsByDirection, setReportsByDirection] = useState({
+    inbound: emptyLevels(),
+    outbound: emptyLevels(),
+  });
+  // `reports` is a derived view: just the slice of reportsByDirection that
+  // matches the currently selected direction. Everything that reads
+  // `reports` below keeps working unchanged.
+  const reports = reportsByDirection[direction];
   const [votedIds, setVotedIds] = useState(new Set());
   // Cooldown is tracked PER COLOR, not globally — reporting "red" only locks
   // out the red button for COOLDOWN_MS; "green" stays reportable the whole
@@ -307,16 +329,23 @@ export default function Tidraiwa() {
   }, [screen]);
 
   // auto-expire stale reports locally on each tick (storage is source of truth on refresh)
+  // Checks BOTH directions, since both halves of reportsByDirection need to
+  // age out independently regardless of which one is currently displayed.
   useEffect(() => {
-    setReports((prev) => {
+    setReportsByDirection((prev) => {
       let changed = false;
-      const next = { tollway: { ...prev.tollway }, local: { ...prev.local } };
-      for (const level of ["tollway", "local"]) {
-        for (const color of ["red", "green"]) {
-          const r = prev[level][color];
-          if (r && now - r.timestamp > EXPIRE_MS) {
-            next[level][color] = null;
-            changed = true;
+      const next = {
+        inbound: { tollway: { ...prev.inbound.tollway }, local: { ...prev.inbound.local } },
+        outbound: { tollway: { ...prev.outbound.tollway }, local: { ...prev.outbound.local } },
+      };
+      for (const dir of ["inbound", "outbound"]) {
+        for (const level of ["tollway", "local"]) {
+          for (const color of ["red", "green"]) {
+            const r = prev[dir][level][color];
+            if (r && now - r.timestamp > EXPIRE_MS) {
+              next[dir][level][color] = null;
+              changed = true;
+            }
           }
         }
       }
@@ -325,18 +354,25 @@ export default function Tidraiwa() {
   }, [now]);
 
   async function refreshReports() {
+    // Fetches and rebuilds BOTH directions' data in one pass — there's no
+    // "current direction" filtering needed anymore, since reportsByDirection
+    // holds both directions at once. This also means switching the
+    // direction tab never needs to wait on a fetch: by the time someone
+    // taps the other tab, that data is very likely already in state from
+    // the last poll.
     const callId = ++refreshCallId.current;
     try {
       const result = await storage.list("report:");
       const keys = result?.keys || [];
-      const byLevel = {
-        tollway: { red: null, green: null },
-        local: { red: null, green: null },
+      const byDirection = {
+        inbound: { tollway: { red: null, green: null }, local: { red: null, green: null } },
+        outbound: { tollway: { red: null, green: null }, local: { red: null, green: null } },
       };
       for (const k of keys) {
         // key shape: report:<direction>_<level>_<color>
         const rest = k.replace("report:", "");
-        if (!rest.startsWith(direction)) continue;
+        const dir = rest.startsWith("inbound_") ? "inbound" : rest.startsWith("outbound_") ? "outbound" : null;
+        if (!dir) continue;
         const level = rest.includes("_tollway_") ? "tollway" : rest.includes("_local_") ? "local" : null;
         const color = rest.endsWith("_red") ? "red" : rest.endsWith("_green") ? "green" : null;
         if (!level || !color) continue;
@@ -345,7 +381,7 @@ export default function Tidraiwa() {
           if (res?.value) {
             const parsed = JSON.parse(res.value);
             if (Date.now() - parsed.timestamp <= EXPIRE_MS) {
-              byLevel[level][color] = parsed;
+              byDirection[dir][level][color] = parsed;
             }
           }
         } catch (e) {}
@@ -354,17 +390,17 @@ export default function Tidraiwa() {
       // drop this result — it's stale, and applying it would clobber
       // whatever the newer call (or a just-submitted report) already set.
       if (callId !== refreshCallId.current) return;
-      setReports(byLevel);
+      setReportsByDirection(byDirection);
     } catch (e) {
       // storage unavailable; keep local state as-is
     }
   }
 
-  // re-fetch when direction changes
-  useEffect(() => {
-    if (screen === "main") refreshReports();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [direction]);
+  // Note: no "re-fetch on direction change" effect needed anymore —
+  // reportsByDirection holds both directions at once, so switching tabs is
+  // purely a local state read, not a new fetch. This removes the timing
+  // window where switching tabs quickly could show stale or empty data
+  // while a fetch for the new direction was still in flight.
 
   // ---------- TTS ----------
   const speak = useCallback(
@@ -549,10 +585,10 @@ export default function Tidraiwa() {
     const statusOpt = STATUS_OPTIONS.find((s) => s.id === statusId);
     let positionText;
     if (autoPosition) {
-      positionText = autoPosition.text;
+      positionText = autoPosition.place;
     } else if (manualLandmarkId) {
       const lm = LANDMARK_SETS[direction].find((l) => l.id === manualLandmarkId);
-      positionText = lm ? `ที่ ${lm.name}` : "ไม่ระบุตำแหน่ง";
+      positionText = lm ? lm.name : "ไม่ระบุตำแหน่ง";
     } else {
       setToast("กรุณาเลือกตำแหน่งก่อนส่งรายงาน");
       setTimeout(() => setToast(""), 2000);
@@ -579,9 +615,12 @@ export default function Tidraiwa() {
       setTimeout(() => setToast(""), 2500);
       return;
     }
-    setReports((prev) => ({
+    setReportsByDirection((prev) => ({
       ...prev,
-      [level]: { ...prev[level], [statusOpt.color]: report },
+      [direction]: {
+        ...prev[direction],
+        [level]: { ...prev[direction][level], [statusOpt.color]: report },
+      },
     }));
     const until = Date.now() + COOLDOWN_MS;
     setCooldownUntil((prev) => {
@@ -654,7 +693,13 @@ export default function Tidraiwa() {
       try {
         await storage.delete(`report:${direction}_${level}_${color}`);
       } catch (e) {}
-      setReports((prev) => ({ ...prev, [level]: { ...prev[level], [color]: null } }));
+      setReportsByDirection((prev) => ({
+        ...prev,
+        [direction]: {
+          ...prev[direction],
+          [level]: { ...prev[direction][level], [color]: null },
+        },
+      }));
       setToast("ข้อมูลถูกรีเซ็ตเนื่องจากมีผู้แจ้งว่าไม่ถูกต้อง");
       setTimeout(() => setToast(""), 2500);
       return;
@@ -662,7 +707,13 @@ export default function Tidraiwa() {
     try {
       await storage.set(`report:${direction}_${level}_${color}`, JSON.stringify(updated));
     } catch (e) {}
-    setReports((prev) => ({ ...prev, [level]: { ...prev[level], [color]: updated } }));
+    setReportsByDirection((prev) => ({
+      ...prev,
+      [direction]: {
+        ...prev[direction],
+        [level]: { ...prev[direction][level], [color]: updated },
+      },
+    }));
     if (isUp) {
       setToast("ยืนยันแล้ว ขอบคุณค่ะ — ต่ออายุรายงานนี้ออกไปอีก 20 นาที");
       setTimeout(() => setToast(""), 2500);
@@ -699,7 +750,7 @@ export default function Tidraiwa() {
         }
       }
     }
-    setReports({ tollway: { red: null, green: null }, local: { red: null, green: null } });
+    setReportsByDirection({ inbound: emptyLevels(), outbound: emptyLevels() });
     setToast("รีเซ็ตข้อมูลทั้งหมดแล้ว");
     setTimeout(() => setToast(""), 2000);
     setAdminOpen(false);
