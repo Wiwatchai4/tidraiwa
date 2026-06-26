@@ -201,7 +201,7 @@ export default function Tidraiwa() {
   // ---------- app routing state ----------
   const [screen, setScreen] = useState("loading"); // loading | welcome | main
   const [direction, setDirection] = useState("inbound");
-  const [selectedLevel, setSelectedLevel] = useState("tollway"); // tollway | local — which road level is shown
+  const [selectedLevel, setSelectedLevel] = useState("local"); // tollway | local — which road level is shown. Defaults to "local" since most users are on the local road, not the tollway.
   const [user, setUser] = useState(null);
   const deviceId = useRef(getDeviceId());
 
@@ -1002,11 +1002,13 @@ export default function Tidraiwa() {
       </div>
 
       {/* level toggle (tollway vs local) — pick one to view, keeps the screen
-          focused on a single road level for fast reading */}
+          focused on a single road level for fast reading. Local comes first
+          (left side, easier thumb reach) since most users are on the local
+          road, not the tollway. */}
       <div style={{ display: "flex", gap: 8, padding: "0 16px 16px" }}>
         {[
-          { key: "tollway", label: "🛣️ โทลล์เวย์ (บน)", accent: colors.yellow, accentDark: colors.yellowDark },
           { key: "local", label: "🚗 ทางราบ (ล่าง)", accent: colors.blue, accentDark: colors.blueDark },
+          { key: "tollway", label: "🛣️ โทลล์เวย์ (บน)", accent: colors.yellow, accentDark: colors.yellowDark },
         ].map((opt) => (
           <button
             key={opt.key}
